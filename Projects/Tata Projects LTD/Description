@@ -1,0 +1,5 @@
+Minimum Stock alert message to all concerned person in daily basis.
+
+Overview:- TATA Projects Limited is implementing S/4 HANA 2022 Green Field project as a part of Project, one of the requirements minimum Stock alert messages to all concerned person in daily basis.
+
+Scope Summary:- The scope of work under this FS is to automate process of monitoring material stock level against safety stock. if current stock of material less than or equal to defined safety stock then system should trigger mail with excel attachment containing material details.
