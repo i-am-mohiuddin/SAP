@@ -1,0 +1,283 @@
+*&---------------------------------------------------------------------*
+*& Include          ZMM_STOCK_ALERT_RPT_CLS
+*&---------------------------------------------------------------------*
+
+
+CLASS lcl_Stock_alert DEFINITION.
+  PUBLIC SECTION.
+    METHODS: get_data EXPORTING lt_records TYPE tt_final lt_roles TYPE tt_agr_name, "lt_auth_role TYPE ANY TABLE,
+      Send_mail,
+      tab_to_excel_conv IMPORTING ir_data_ref       TYPE REF TO data
+                        RETURNING VALUE(rv_xstring) TYPE xstring.
+ENDCLASS.
+
+
+CLASS lcl_stock_alert IMPLEMENTATION.
+
+  METHOD get_data.
+
+*    SELECT FROM zmmt_alert_roles FIELDS agr_name  WHERE agr_name IN @role INTO TABLE @DATA(lt_agr_name).
+
+*    SELECT FROM marc AS a INNER JOIN mard AS b ON ( b~matnr EQ a~matnr ) RIGHT OUTER JOIN mspr AS c ON ( c~matnr EQ a~matnr )
+*    FIELDS  a~matnr,a~werks,a~eisbe,
+*          SUM( b~insme ) AS insme,SUM( b~labst ) AS labst,
+*          SUM( c~prlab ) AS prlab
+*      WHERE a~werks IN @s_werks
+*      AND   b~werks IN @s_werks
+*      AND   c~werks IN @s_werks
+*      AND a~eisbe > 0  GROUP BY a~matnr,a~werks,a~eisbe INTO TABLE @DATA(lt_material).
+
+    IF role IS INITIAL AND s_werks IS INITIAL.
+      MESSAGE 'Please Enter Plant and Role' TYPE 'E'.
+    ELSE.
+      IF role IS INITIAL.
+        MESSAGE 'Please Enter Role' TYPE 'E'.
+      ELSEIF s_werks IS INITIAL.
+        MESSAGE 'Please Enter Plant' TYPE 'E'.
+      ENDIF.
+    ENDIF.
+
+
+    SELECT matnr,werks,eisbe FROM marc WHERE werks IN @s_werks
+                                             AND eisbe > 0  INTO TABLE @DATA(lt_marc).
+    IF lt_marc IS NOT INITIAL.
+      DATA(lt_material) = lt_marc.
+    ENDIF.
+
+    IF lt_material IS NOT INITIAL.
+      SELECT FROM makt FIELDS matnr,maktx FOR ALL ENTRIES IN @lt_material  WHERE matnr EQ @lt_material-matnr INTO TABLE @DATA(lt_mat_desc).
+
+      SELECT FROM mara FIELDS matnr,meins FOR ALL ENTRIES IN @lt_material  WHERE matnr EQ @lt_material-matnr INTO TABLE @DATA(lt_mat_meins).
+
+      SELECT matnr, werks, labst, insme FROM mard FOR ALL ENTRIES IN @lt_material WHERE matnr EQ @lt_material-matnr AND werks EQ @lt_material-werks INTO TABLE @DATA(lt_mat_lbast).
+      SELECT DISTINCT matnr, werks, SUM( labst ) AS labst , SUM( insme ) AS insme FROM @lt_mat_lbast AS a GROUP BY matnr, werks INTO TABLE @DATA(lt_mard).
+
+      IF lt_mat_desc IS NOT INITIAL.
+        DATA:ls_records TYPE ts_final.
+        SORT lt_material BY werks.
+        LOOP AT lt_material ASSIGNING FIELD-SYMBOL(<fs_material>).
+          SELECT SINGLE  matnr, werks , SUM( prlab ) AS prlab , SUM( prins ) AS prins  FROM mspr
+                 WHERE matnr EQ @<fs_material>-matnr AND werks EQ @<fs_material>-werks GROUP BY matnr, werks INTO  @DATA(ls_mspr).
+
+          READ TABLE lt_mat_desc INTO DATA(ls_mat_desc) WITH KEY matnr = <fs_material>-matnr.
+          READ TABLE lt_mat_meins INTO DATA(ls_mat_meins) WITH KEY matnr = <fs_material>-matnr.
+          READ TABLE lt_mard INTO DATA(ls_mard) WITH KEY matnr = <fs_material>-matnr werks = <fs_material>-werks.
+          IF ls_mat_desc IS NOT INITIAL OR ls_mat_meins IS NOT INITIAL.
+            CALL FUNCTION 'CONVERSION_EXIT_MATN1_OUTPUT'
+              EXPORTING
+                input  = <fs_material>-matnr
+              IMPORTING
+                output = <fs_material>-matnr.
+
+            ls_records = VALUE #( Material_Code        = <fs_material>-matnr
+                                  Material_Description = ls_mat_desc-maktx
+                                  uom                  = ls_mat_meins-meins
+                                  Safty_stock          = <fs_material>-eisbe
+                                  current_stock        = ls_mard-labst + ls_mard-insme + ls_mspr-prlab + ls_mspr-prins
+                                  werks                = <fs_material>-werks ).
+
+            IF ls_records-safty_stock GE ls_records-current_stock.
+
+              APPEND ls_records TO lt_records.
+            ENDIF.
+
+          ENDIF.
+          CLEAR: ls_mat_desc, ls_mard,ls_mspr, ls_mat_meins.
+
+          CLEAR:<fs_material>.
+        ENDLOOP.
+      ENDIF.
+    ENDIF.
+
+    SELECT DISTINCT a~agr_name,a~uname,
+                    b~smtp_addr
+                   FROM agr_users AS a
+             INNER JOIN puser002 AS b ON b~bname EQ a~uname
+               WHERE a~agr_name IN @role INTO TABLE @DATA(lt_uname).
+
+    IF lt_uname IS NOT INITIAL.
+      CLEAR lt_roles.
+      DELETE  lt_uname WHERE smtp_addr IS INITIAL.
+      lt_roles = lt_uname.
+    ENDIF.
+
+  ENDMETHOD.
+
+
+
+  METHOD send_mail.
+
+    me->get_data(
+      IMPORTING
+        lt_records = DATA(lt_data)
+        lt_roles   = DATA(lt_role)
+        ).
+
+
+    DATA: lv_matnr TYPE matnr,
+          lt_final TYPE TABLE OF ts_final1.
+
+*--- Email code starts here
+    TRY.
+        "Create send request
+        DATA(lo_send_request) = cl_bcs=>create_persistent( ).
+
+        "Create mail body
+        DATA: lt_line TYPE TABLE OF tline .
+
+        CALL FUNCTION 'READ_TEXT'
+          EXPORTING
+*           client                  = SY-MANDT         " Client
+            id                      = 'ST'                " Text ID of text to be read
+            language                = Sy-langu               " Language of text to be read
+            name                    = 'ZMM_MINSTK'               " Name of text to be read
+            object                  = 'TEXT'                " Object of text to be read
+          TABLES
+            lines                   = lt_line                " Lines of text read
+          EXCEPTIONS
+            id                      = 1                " Text ID invalid
+            language                = 2                " Invalid language
+            name                    = 3                " Invalid text name
+            not_found               = 4                " Text not found
+            object                  = 5                " Invalid text object
+            reference_check         = 6                " Reference chain interrupted
+            wrong_access_to_archive = 7                " Archive handle invalid for access
+            OTHERS                  = 8.
+        IF sy-subrc <> 0.
+          MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+        ENDIF.
+
+        DATA:lt_body TYPE bcsy_text.
+
+        IF lt_line IS NOT INITIAL.
+          LOOP AT lt_line INTO DATA(ls_line).
+            APPEND ls_line-tdline TO lt_body.
+            CLEAR ls_line.
+          ENDLOOP.
+        ENDIF.
+
+        "Set up document object
+        SELECT SINGLE name1 FROM t001w WHERE werks IN @s_werks INTO @DATA(lv_name1).
+
+        CONCATENATE sy-datum+6(2) sy-datum+4(2) sy-datum+0(4) INTO DATA(lv_date) SEPARATED BY '/'.
+        CONCATENATE  'Minimum stock alert' lv_date lv_name1 INTO lv_sub SEPARATED BY '-'.
+
+        DATA(lo_document) = cl_document_bcs=>create_document(
+                              i_type = 'RAW'
+                              i_text = lt_body
+                              i_subject = lv_sub ).
+
+        SORT lt_data BY werks.
+        DATA(lt_tmp) = lt_data.
+        DATA(lv_current_stock) = 0.
+        DELETE ADJACENT DUPLICATES FROM lt_tmp COMPARING werks.
+
+
+        MOVE-CORRESPONDING lt_data TO lt_final.
+        GET REFERENCE OF lt_final INTO DATA(lo_data_ref).
+        DATA(lv_xstring) = me->tab_to_excel_conv( ir_data_ref = lo_data_ref ).
+
+
+        LOOP AT lt_role INTO DATA(ls_role).
+          IF ls_role-smtp_addr IS NOT INITIAL.
+            lv_email = ls_role-smtp_addr.
+            lo_send_request->add_recipient(
+                           i_recipient = cl_cam_address_bcs=>create_internet_address(
+                           i_address_string = CONV #( lv_email )
+                                          )
+                           i_express   = abap_true ).
+          ENDIF.
+          CLEAR ls_role.
+        ENDLOOP.
+
+
+        lo_document->add_attachment(
+          i_attachment_type    = 'xls'
+          i_attachment_size    = CONV #( xstrlen( lv_xstring ) )
+          i_attachment_subject = lv_sub
+          i_attachment_header  = VALUE #( ( line = 'Alert.xlsx' ) )
+          i_att_content_hex    = cl_bcs_convert=>xstring_to_solix( lv_xstring )
+       ).
+
+        "Add document to send request
+        lo_send_request->set_document( lo_document ).
+
+        "Set sender
+        SELECT SINGLE smtp_addr  FROM puser002 INTO lv_name WHERE  bname EQ sy-uname.
+
+        lo_send_request->set_sender(
+          cl_cam_address_bcs=>create_internet_address(
+            i_address_string = CONV #( lv_name )
+          )
+        ).
+
+        "Send Email
+        IF lt_final IS NOT INITIAL.
+          DATA(lv_sent_to_all) = lo_send_request->send( ).
+          COMMIT WORK.
+          IF sy-subrc EQ 0.
+            MESSAGE 'Mail triggered' TYPE 'S'.
+          ELSE.
+            MESSAGE 'Error' TYPE 'E'.
+          ENDIF.
+          CLEAR lt_final.
+        ELSE.
+          MESSAGE 'Mail Not triggered' TYPE 'E'.
+        ENDIF.
+
+      CATCH cx_send_req_bcs INTO DATA(lx_req_bsc).
+        "Error handling
+      CATCH cx_document_bcs INTO DATA(lx_doc_bcs).
+        "Error handling
+      CATCH cx_address_bcs  INTO DATA(lx_add_bcs).
+        "Error handling
+    ENDTRY.
+
+
+  ENDMETHOD.
+
+
+
+
+
+
+  METHOD tab_to_excel_conv.
+
+    FIELD-SYMBOLS: <fs_data> TYPE ANY TABLE.
+
+    CLEAR rv_xstring.
+    ASSIGN ir_data_ref->* TO <fs_data>.
+
+    TRY.
+        cl_salv_table=>factory(
+          IMPORTING r_salv_table = DATA(lo_table)
+          CHANGING  t_table      = <fs_data> ).
+
+        DATA(lt_fcat) =
+          cl_salv_controller_metadata=>get_lvc_fieldcatalog(
+            r_columns      = lo_table->get_columns( )
+            r_aggregations = lo_table->get_aggregations( ) ).
+
+        DATA(lo_result) =
+          cl_salv_ex_util=>factory_result_data_table(
+            r_data         = ir_data_ref
+            t_fieldcatalog = lt_fcat ).
+
+        cl_salv_bs_tt_util=>if_salv_bs_tt_util~transform(
+          EXPORTING
+            xml_type      = if_salv_bs_xml=>c_type_xlsx
+            xml_version   = cl_salv_bs_a_xml_base=>get_version( )
+            r_result_data = lo_result
+            xml_flavour   = if_salv_bs_c_tt=>c_tt_xml_flavour_export
+            gui_type      = if_salv_bs_xml=>c_gui_type_gui
+          IMPORTING
+            xml           = rv_xstring ).
+      CATCH cx_root.
+        CLEAR rv_xstring.
+    ENDTRY.
+
+  ENDMETHOD.
+
+
+ENDCLASS.

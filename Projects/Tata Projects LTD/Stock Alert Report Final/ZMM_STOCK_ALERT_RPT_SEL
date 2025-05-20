@@ -1,0 +1,10 @@
+*&---------------------------------------------------------------------*
+*& Include          ZMM_STOCK_ALERT_RPT_SEL
+*&---------------------------------------------------------------------*
+
+TABLES:marc , zmmt_alert_roles.
+
+SELECTION-SCREEN: BEGIN OF BLOCK b1.
+  select-OPTIONS: s_werks for marc-werks ,
+                  role for ZMMT_ALERT_ROLES-agr_name .
+SELECTION-SCREEN:END OF BLOCK b1.
