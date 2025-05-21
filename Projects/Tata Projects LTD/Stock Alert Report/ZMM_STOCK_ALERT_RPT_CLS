@@ -16,17 +16,6 @@ CLASS lcl_stock_alert IMPLEMENTATION.
 
   METHOD get_data.
 
-*    SELECT FROM zmmt_alert_roles FIELDS agr_name  WHERE agr_name IN @role INTO TABLE @DATA(lt_agr_name).
-
-*    SELECT FROM marc AS a INNER JOIN mard AS b ON ( b~matnr EQ a~matnr ) RIGHT OUTER JOIN mspr AS c ON ( c~matnr EQ a~matnr )
-*    FIELDS  a~matnr,a~werks,a~eisbe,
-*          SUM( b~insme ) AS insme,SUM( b~labst ) AS labst,
-*          SUM( c~prlab ) AS prlab
-*      WHERE a~werks IN @s_werks
-*      AND   b~werks IN @s_werks
-*      AND   c~werks IN @s_werks
-*      AND a~eisbe > 0  GROUP BY a~matnr,a~werks,a~eisbe INTO TABLE @DATA(lt_material).
-
     IF role IS INITIAL AND s_werks IS INITIAL.
       MESSAGE 'Please Enter Plant and Role' TYPE 'E'.
     ELSE.
